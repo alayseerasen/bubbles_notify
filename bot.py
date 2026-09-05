@@ -200,13 +200,90 @@ async def bubbles_webhook(request: Request, x_bubbles_webhook_secret: str | None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global tg_app
+
+    log.info("=== STARTING BUBBLES TELEGRAM BOT ===")
+    log.info("Creating Telegram application...")
+
     tg_app = Application.builder().token(BOT_TOKEN).build()
+
     tg_app.add_handler(CommandHandler("start", start))
     tg_app.add_handler(CommandHandler("settings", settings_cmd))
     tg_app.add_handler(CommandHandler("status", status_cmd))
     tg_app.add_handler(CommandHandler("unlink", unlink_cmd))
     tg_app.add_handler(CallbackQueryHandler(callbacks))
-    await tg_app.initialize(); await tg_app.start(); await tg_app.updater.start_polling(drop_pending_updates=True)
+
+    log.info("Initializing Telegram application...")
+    await tg_app.initialize()
+
+    log.info("Starting Telegram application...")
+    await tg_app.start()
+
+    log.info("Starting Telegram polling...")
+    await tg_app.updater.start_polling(drop_pending_updates=True)
+
+    log.info("=== TELEGRAM BOT IS RUNNING ===")
+
     yield
-    await tg_app.updater.stop(); await tg_app.stop(); await tg_app.shutdown(); await http.aclose()
-    app.router.lifespan_context = lifespan
+
+    log.info("Stopping Telegram polling...")
+    await tg_app.updater.stop()
+
+    log.info("Stopping Telegram application...")
+    await tg_app.stop()
+
+    log.info("Shutting down Telegram application...")
+    await tg_app.shutdown()
+
+    await http.aclose()
+
+    log.info("=== TELEGRAM BOT STOPPED ===")
+
+
+app = FastAPI(
+    title="Bubbles Telegram Notifications",
+    lifespan=lifespan,
+)
+
+
+@app.get("/health")
+async def health():
+    return {
+        "ok": True,
+        "service": "bubbles-telegram-notifications"
+    }
+
+
+@app.post("/bubbles/webhook")
+async def bubbles_webhook(
+    request: Request,
+    x_bubbles_webhook_secret: str | None = Header(default=None),
+):
+    if x_bubbles_webhook_secret != WEBHOOK_SECRET:
+        raise HTTPException(
+            status_code=401,
+            detail="invalid webhook secret"
+        )
+
+    payload = await request.json()
+
+    if (
+        payload.get("type") != "INSERT"
+        or payload.get("table") != "notifications"
+    ):
+        return JSONResponse({
+            "ok": True,
+            "ignored": True
+        })
+
+    try:
+        await process_notification(payload.get("record") or {})
+    except Exception:
+        log.exception("Notification processing failed")
+        raise HTTPException(
+            status_code=500,
+            detail="notification processing failed"
+        )
+
+    return {
+        "ok": True
+    }
