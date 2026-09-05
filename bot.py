@@ -209,3 +209,4 @@ async def lifespan(app: FastAPI):
     await tg_app.initialize(); await tg_app.start(); await tg_app.updater.start_polling(drop_pending_updates=True)
     yield
     await tg_app.updater.stop(); await tg_app.stop(); await tg_app.shutdown(); await http.aclose()
+    app.router.lifespan_context = lifespan
