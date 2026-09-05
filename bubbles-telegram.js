@@ -9,7 +9,7 @@ async function connectTelegramToBubbles(supabase) {
     return;
   }
   const telegramUrl =
-    "https://t.me/YOUR_BOT_USERNAME?start=" + encodeURIComponent(data);
+    "https://t.me/bubblesnotifications_bot?start=" + encodeURIComponent(data);
   window.open(telegramUrl, "_blank", "noopener,noreferrer");
 }
 
