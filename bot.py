@@ -20,7 +20,9 @@ BOT_TOKEN = os.environ["TG_BOT_TOKEN"]
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 BUBBLES_URL = os.getenv("BUBBLES_URL", "https://example.com").rstrip("/")
-WEBHOOK_SECRET = os.environ["BUBBLES_WEBHOOK_SECRET"]
+WEBHOOK_SECRET = os.environ["BUBBLES_WEBHOOK_SECRET"]  # auths Supabase -> bot (the /bubbles/webhook endpoint)
+TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")  # auths Telegram -> bot (the /telegram/webhook endpoint); optional but recommended
+PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")  # this service's own public URL, e.g. https://bubbles-telegram-bot.onrender.com — if set, the webhook registers itself on startup
 
 http = httpx.AsyncClient(timeout=15.0)
 tg_app: Application | None = None
@@ -338,6 +340,16 @@ async def bubbles_webhook(request: Request, x_bubbles_webhook_secret: str | None
     return {"ok": True}
 
 
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: str | None = Header(default=None)):
+    if TELEGRAM_WEBHOOK_SECRET and x_telegram_bot_api_secret_token != TELEGRAM_WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="invalid telegram webhook secret")
+    data = await request.json()
+    update = Update.de_json(data, tg_app.bot)
+    await tg_app.process_update(update)
+    return {"ok": True}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global tg_app
@@ -348,9 +360,28 @@ async def lifespan(app: FastAPI):
     tg_app.add_handler(CommandHandler("status", status_cmd))
     tg_app.add_handler(CommandHandler("unlink", unlink_cmd))
     tg_app.add_handler(CallbackQueryHandler(callbacks))
-    await tg_app.initialize(); await tg_app.start(); await tg_app.updater.start_polling(drop_pending_updates=True)
+    await tg_app.initialize()
+    await tg_app.start()
+    # Webhook mode, not long polling: a free-tier host (Render, etc.)
+    # spins the service down after a stretch with no INCOMING HTTP
+    # requests. Long polling is the bot making OUTGOING requests to
+    # Telegram in a loop — invisible to that mechanism — so the host
+    # would happily kill the process mid-poll ("бот уснул"). Webhook
+    # mode means Telegram makes the incoming request instead, which
+    # both counts as traffic and wakes a sleeping instance on demand.
+    if PUBLIC_URL:
+        await tg_app.bot.set_webhook(
+            url=f"{PUBLIC_URL}/telegram/webhook",
+            secret_token=TELEGRAM_WEBHOOK_SECRET or None,
+            drop_pending_updates=True,
+        )
+        log.info("Telegram webhook registered at %s/telegram/webhook", PUBLIC_URL)
+    else:
+        log.warning("PUBLIC_URL not set — webhook was NOT auto-registered. Register it manually (see README.md) or the bot won't receive any messages.")
     yield
-    await tg_app.updater.stop(); await tg_app.stop(); await tg_app.shutdown(); await http.aclose()
+    await tg_app.stop()
+    await tg_app.shutdown()
+    await http.aclose()
 
 
 app.router.lifespan_context = lifespan
